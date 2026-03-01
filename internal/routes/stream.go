@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	range_parser "github.com/quantumsheep/range-parser"
 	"go.uber.org/zap"
@@ -28,7 +29,6 @@ func (e *allRoutes) LoadHome(r *Route) {
 func getWatchRoute(ctx *gin.Context) {
 	messageID := ctx.Param("messageID")
 	authHash := ctx.Query("hash")
-	// Hum yahan 'stream' URL mein extension nahi denge taaki browser download na kare
 	streamURL := fmt.Sprintf("/stream/%s?hash=%s", messageID, authHash)
 
 	html := fmt.Sprintf(`
@@ -37,24 +37,26 @@ func getWatchRoute(ctx *gin.Context) {
 	<head>
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
-		<title>Video Player</title>
+		<title>Telegram Video Player</title>
 		<script src="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.polyfilled.js"></script>
 		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.css" />
 		<style>
 			body { margin: 0; background: #000; height: 100vh; display: flex; align-items: center; justify-content: center; }
-			.wrapper { width: 100%%; max-width: 900px; }
+			.wrapper { width: 100%%; max-width: 950px; }
+			video { width: 100%%; border-radius: 10px; }
 		</style>
 	</head>
 	<body>
 		<div class="wrapper">
-			<video id="player" playsinline controls>
+			<video id="player" playsinline controls preload="metadata">
 				<source src="%s" type="video/mp4" />
 			</video>
 		</div>
 		<script>
 			const player = new Plyr('#player', {
-				title: 'Streaming Content',
-				tooltips: { controls: true, seek: true }
+				autoplay: true,
+				invertTime: false,
+				toggleInvert: false,
 			});
 		</script>
 	</body>
@@ -84,9 +86,14 @@ func getStreamRoute(ctx *gin.Context) {
 		return
 	}
 
-	// STREAMING VS DOWNLOAD LOGIC
 	isDownload := ctx.Query("d") == "true"
 	
+	// FIX FOR MPEG-TS: Agar file TS format mein hai toh sahi mime bhejenge
+	mimeType := "video/mp4"
+	if strings.HasSuffix(strings.ToLower(file.FileName), ".ts") || file.MimeType == "video/mp2t" {
+		mimeType = "video/mp2t"
+	}
+
 	ctx.Header("Accept-Ranges", "bytes")
 	ctx.Header("Access-Control-Allow-Origin", "*")
 	ctx.Header("X-Content-Type-Options", "nosniff")
@@ -95,8 +102,7 @@ func getStreamRoute(ctx *gin.Context) {
 		ctx.Header("Content-Type", "application/octet-stream")
 		ctx.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.FileName))
 	} else {
-		// YAHAN FIX HAI: Hum filename BHEJENGE HI NAHI, taaki browser use download na kare
-		ctx.Header("Content-Type", "video/mp4")
+		ctx.Header("Content-Type", mimeType)
 		ctx.Header("Content-Disposition", "inline")
 	}
 
