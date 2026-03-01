@@ -12,7 +12,6 @@ import (
 	"github.com/celestix/gotgproto/ext"
 	"github.com/celestix/gotgproto/storage"
 	"github.com/celestix/gotgproto/types"
-	"github.com/gotd/td/telegram/message/styling"
 	"github.com/gotd/td/tg"
 )
 
@@ -25,7 +24,7 @@ func (m *command) LoadStream(dispatcher dispatcher.Dispatcher) {
 }
 
 func supportedMediaFilter(m *types.Message) (bool, error) {
-	if not := m.Media == nil; not {
+	if m.Media == nil {
 		return false, dispatcher.EndGroups
 	}
 	switch m.Media.(type) {
@@ -33,8 +32,6 @@ func supportedMediaFilter(m *types.Message) (bool, error) {
 		return true, nil
 	case *tg.MessageMediaPhoto:
 		return true, nil
-	case tg.MessageMediaClass:
-		return false, dispatcher.EndGroups
 	default:
 		return false, nil
 	}
@@ -46,85 +43,83 @@ func sendLink(ctx *ext.Context, u *ext.Update) error {
 	if peerChatId.Type != int(storage.TypeUser) {
 		return dispatcher.EndGroups
 	}
+
 	if len(config.ValueOf.AllowedUsers) != 0 && !utils.Contains(config.ValueOf.AllowedUsers, chatId) {
 		ctx.Reply(u, ext.ReplyTextString("You are not allowed to use this bot."), nil)
 		return dispatcher.EndGroups
 	}
+
 	supported, err := supportedMediaFilter(u.EffectiveMessage)
-	if err != nil {
-		return err
-	}
-	if !supported {
+	if err != nil || !supported {
 		ctx.Reply(u, ext.ReplyTextString("Sorry, this message type is unsupported."), nil)
 		return dispatcher.EndGroups
 	}
+
 	update, err := utils.ForwardMessages(ctx, chatId, config.ValueOf.LogChannelID, u.EffectiveMessage.ID)
 	if err != nil {
 		utils.Logger.Sugar().Error(err)
 		ctx.Reply(u, ext.ReplyTextString(fmt.Sprintf("Error - %s", err.Error())), nil)
 		return dispatcher.EndGroups
 	}
+
 	if len(update.Updates) < 2 {
 		ctx.Reply(u, ext.ReplyTextString("Error - unexpected update structure from Telegram"), nil)
 		return dispatcher.EndGroups
 	}
+
 	msgIDUpdate, ok := update.Updates[0].(*tg.UpdateMessageID)
 	if !ok {
 		ctx.Reply(u, ext.ReplyTextString("Error - unexpected update type"), nil)
 		return dispatcher.EndGroups
 	}
-	messageID := msgIDUpdate.ID
+
 	newMsg, ok := update.Updates[1].(*tg.UpdateNewChannelMessage)
 	if !ok {
 		ctx.Reply(u, ext.ReplyTextString("Error - unexpected channel message update"), nil)
 		return dispatcher.EndGroups
 	}
+
 	msg, ok := newMsg.Message.(*tg.Message)
 	if !ok {
 		ctx.Reply(u, ext.ReplyTextString("Error - unexpected message type"), nil)
 		return dispatcher.EndGroups
 	}
-	doc := msg.Media
-	file, err := utils.FileFromMedia(doc)
+
+	file, err := utils.FileFromMedia(msg.Media)
 	if err != nil {
 		ctx.Reply(u, ext.ReplyTextString(fmt.Sprintf("Error - %s", err.Error())), nil)
 		return dispatcher.EndGroups
 	}
-	fullHash := utils.PackFile(
-		file.FileName,
-		file.FileSize,
-		file.MimeType,
-		file.ID,
-	)
-	hash := utils.GetShortHash(fullHash)
-	streamLink := fmt.Sprintf("%s/stream/%d?hash=%s", config.ValueOf.Host, messageID, hash)
-watchLink := fmt.Sprintf("%s/watch/%d?hash=%s", config.ValueOf.Host, messageID, hash)
-	text := styling.Code(watchLink)
-	// Download button hamesha stream link + &d=true rahega
-row := tg.KeyboardButtonRow{
-    Buttons: []tg.KeyboardButtonClass{
-        &tg.KeyboardButtonURL{
-            Text: "Download 📥",
-            URL:  streamLink + "&d=true",
-        },
-    },
-}
 
-// Agar video hai, toh "Watch Online" wala button hamare naye route (/watch/) pe jayega
-if strings.Contains(file.MimeType, "video") || strings.Contains(file.MimeType, "audio") {
-    row.Buttons = append(row.Buttons, &tg.KeyboardButtonURL{
-        Text: "Watch Online 📺",
-        URL:  watchLink, // Hamara naya Hls.js player yahan khulega
-    })
-} else if strings.Contains(file.MimeType, "pdf") {
-    row.Buttons = append(row.Buttons, &tg.KeyboardButtonURL{
-        Text: "View PDF 📄",
-        URL:  streamLink,
+	fullHash := utils.PackFile(file.FileName, file.FileSize, file.MimeType, file.ID)
+	hash := utils.GetShortHash(fullHash)
+	
+	streamLink := fmt.Sprintf("%s/stream/%d?hash=%s", config.ValueOf.Host, msgIDUpdate.ID, hash)
+	watchLink := fmt.Sprintf("%s/watch/%d?hash=%s", config.ValueOf.Host, msgIDUpdate.ID, hash)
+
+	// Buttons
+	row := tg.KeyboardButtonRow{}
+	row.Buttons = append(row.Buttons, &tg.KeyboardButtonURL{
+		Text: "Download 📥",
+		URL:  streamLink + "&d=true",
+	})
+
+	if strings.Contains(file.MimeType, "video") || strings.Contains(file.MimeType, "audio") {
+		row.Buttons = append(row.Buttons, &tg.KeyboardButtonURL{
+			Text: "Watch Online 📺",
+			URL:  watchLink,
+		})
+	} else if strings.Contains(file.MimeType, "pdf") {
+		row.Buttons = append(row.Buttons, &tg.KeyboardButtonURL{
+			Text: "View PDF 📄",
+			URL:  streamLink,
 		})
 	}
 
-	// Message send karne ki logic
-	_, err = ctx.Reply(u, ext.ReplyTextString(watchLink), &ext.ReplyOpts{
+	// Final Response: Maine code format mein watchLink bhej diya hai
+	caption := fmt.Sprintf("✅ **File Ready!**\n\n🔗 **Link:** `%s` ", watchLink)
+
+	_, err = ctx.Reply(u, ext.ReplyTextString(caption), &ext.ReplyOpts{
 		Markup: &tg.ReplyInlineMarkup{
 			Rows: []tg.KeyboardButtonRow{row},
 		},
