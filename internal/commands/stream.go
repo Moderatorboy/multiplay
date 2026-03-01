@@ -120,5 +120,14 @@ if strings.Contains(file.MimeType, "video") || strings.Contains(file.MimeType, "
     row.Buttons = append(row.Buttons, &tg.KeyboardButtonURL{
         Text: "View PDF 📄",
         URL:  streamLink,
-    })
+		})
+	}
+
+	// Message send karne ki logic
+	_, err = ctx.Reply(u, ext.ReplyTextString(watchLink), &ext.ReplyOpts{
+		Markup: &tg.ReplyInlineMarkup{
+			Rows: []tg.KeyboardButtonRow{row},
+		},
+	})
+	return err
 }
