@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 
 	range_parser "github.com/quantumsheep/range-parser"
 	"go.uber.org/zap"
@@ -29,6 +28,7 @@ func (e *allRoutes) LoadHome(r *Route) {
 func getWatchRoute(ctx *gin.Context) {
 	messageID := ctx.Param("messageID")
 	authHash := ctx.Query("hash")
+	// Hum yahan 'stream' URL mein extension nahi denge taaki browser download na kare
 	streamURL := fmt.Sprintf("/stream/%s?hash=%s", messageID, authHash)
 
 	html := fmt.Sprintf(`
@@ -37,50 +37,25 @@ func getWatchRoute(ctx *gin.Context) {
 	<head>
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
-		<title>Telegram Video Player</title>
-		<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+		<title>Video Player</title>
+		<script src="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.polyfilled.js"></script>
+		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.css" />
 		<style>
-			body { margin: 0; background: #000; display: flex; flex-direction: column; justify-content: center; align-items: center; height: 100vh; color: white; font-family: sans-serif; }
-			.container { width: 95%%; max-width: 1000px; position: relative; }
-			video { width: 100%%; border-radius: 8px; background: #000; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
-			.status { margin-top: 10px; font-size: 14px; color: #aaa; }
+			body { margin: 0; background: #000; height: 100vh; display: flex; align-items: center; justify-content: center; }
+			.wrapper { width: 100%%; max-width: 900px; }
 		</style>
 	</head>
 	<body>
-		<div class="container">
-			<video id="video" controls playsinline preload="metadata"></video>
-			<div class="status" id="status">Initializing player...</div>
+		<div class="wrapper">
+			<video id="player" playsinline controls>
+				<source src="%s" type="video/mp4" />
+			</video>
 		</div>
 		<script>
-			var video = document.getElementById('video');
-			var status = document.getElementById('status');
-			var videoSrc = window.location.origin + '%s';
-
-			function startPlayer() {
-				if (Hls.isSupported()) {
-					var hls = new Hls({
-						enableWorker: true,
-						lowLatencyMode: true,
-						backBufferLength: 90
-					});
-					hls.loadSource(videoSrc);
-					hls.attachMedia(video);
-					hls.on(Hls.Events.MANIFEST_PARSED, function() {
-						status.innerText = "Streaming via HLS...";
-						video.play();
-					});
-					hls.on(Hls.Events.ERROR, function(event, data) {
-						if (data.fatal) {
-							console.log("HLS Error, trying native...");
-							video.src = videoSrc;
-						}
-					});
-				} else if (video.canPlayType('application/vnd.apple.mpegurl') || video.canPlayType('video/mp4')) {
-					video.src = videoSrc;
-					status.innerText = "Streaming via Native Player...";
-				}
-			}
-			startPlayer();
+			const player = new Plyr('#player', {
+				title: 'Streaming Content',
+				tooltips: { controls: true, seek: true }
+			});
 		</script>
 	</body>
 	</html>`, streamURL)
@@ -98,33 +73,32 @@ func getStreamRoute(ctx *gin.Context) {
 	authHash := ctx.Query("hash")
 
 	if authHash == "" {
-		http.Error(w, "missing hash", http.StatusBadRequest)
+		ctx.AbortWithStatus(http.StatusForbidden)
 		return
 	}
 
 	worker := bot.GetNextWorker()
 	file, err := utils.FileFromMessage(ctx, worker.Client, messageID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		ctx.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 
-	// Dynamic Mime Handling
+	// STREAMING VS DOWNLOAD LOGIC
 	isDownload := ctx.Query("d") == "true"
-	mimeType := "video/mp4" // Default for streaming
-	disposition := "inline"
-
-	if isDownload {
-		mimeType = file.MimeType
-		disposition = "attachment"
-	}
-
-	// Important Headers for Video Seeking
+	
 	ctx.Header("Accept-Ranges", "bytes")
 	ctx.Header("Access-Control-Allow-Origin", "*")
-	ctx.Header("Content-Type", mimeType)
-	ctx.Header("Content-Disposition", fmt.Sprintf("%s; filename=\"%s\"", disposition, file.FileName))
 	ctx.Header("X-Content-Type-Options", "nosniff")
+
+	if isDownload {
+		ctx.Header("Content-Type", "application/octet-stream")
+		ctx.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.FileName))
+	} else {
+		// YAHAN FIX HAI: Hum filename BHEJENGE HI NAHI, taaki browser use download na kare
+		ctx.Header("Content-Type", "video/mp4")
+		ctx.Header("Content-Disposition", "inline")
+	}
 
 	var start, end int64
 	rangeHeader := r.Header.Get("Range")
@@ -132,21 +106,17 @@ func getStreamRoute(ctx *gin.Context) {
 	if rangeHeader == "" {
 		start = 0
 		end = file.FileSize - 1
-		if !isDownload {
-			// Video players need 206 Partial Content, not 200 OK hamesha
-			w.WriteHeader(http.StatusOK)
-		}
+		w.WriteHeader(http.StatusOK)
 	} else {
-		ranges, err := range_parser.Parse(file.FileSize, rangeHeader)
-		if err != nil {
-			// Fallback if range parsing fails
-			start = 0
-			end = file.FileSize - 1
-		} else {
+		ranges, _ := range_parser.Parse(file.FileSize, rangeHeader)
+		if len(ranges) > 0 {
 			start = ranges[0].Start
 			end = ranges[0].End
 			ctx.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, file.FileSize))
 			w.WriteHeader(http.StatusPartialContent)
+		} else {
+			start = 0
+			end = file.FileSize - 1
 		}
 	}
 
@@ -155,10 +125,7 @@ func getStreamRoute(ctx *gin.Context) {
 
 	if r.Method != "HEAD" {
 		pipe, err := stream.NewStreamPipe(ctx, worker.Client, file.Location, start, end, log)
-		if err != nil {
-			log.Error("Stream Pipe Error", zap.Error(err))
-			return
-		}
+		if err != nil { return }
 		defer pipe.Close()
 		io.CopyN(w, pipe, contentLength)
 	}
