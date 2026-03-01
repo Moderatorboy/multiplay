@@ -30,35 +30,39 @@ func getWatchRoute(ctx *gin.Context) {
 	authHash := ctx.Query("hash")
 	streamURL := fmt.Sprintf("/stream/%s?hash=%s", messageID, authHash)
 
+	// Ultra-Compatible Video Player
 	html := fmt.Sprintf(`
 	<!DOCTYPE html>
 	<html>
 	<head>
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
-		<title>Telegram Video Player</title>
+		<title>Telegram Player - Playing...</title>
 		<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 		<style>
-			body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; color: white; font-family: sans-serif; }
-			.container { width: 100%%; max-width: 900px; padding: 20px; }
-			video { width: 100%%; border-radius: 8px; background: #000; outline: none; }
-			.info { text-align: center; margin-top: 15px; color: #888; font-size: 14px; }
+			body { margin: 0; background: #000; display: flex; justify-content: center; align-items: center; height: 100vh; color: white; font-family: sans-serif; overflow: hidden; }
+			.container { width: 100%%; max-width: 1000px; }
+			video { width: 100%%; max-height: 90vh; border-radius: 12px; box-shadow: 0 0 50px rgba(0,0,0,1); background: #000; }
+			.info { text-align: center; margin-top: 10px; color: #555; font-size: 12px; letter-spacing: 1px; }
 		</style>
 	</head>
 	<body>
 		<div class="container">
-			<video id="video" controls autoplay playsinline></video>
-			<div class="info">Streaming from @Rensiter_streamer_bot</div>
+			<video id="video" controls autoplay playsinline preload="auto"></video>
+			<div class="info">POWERED BY RENSITER STREAMER</div>
 		</div>
 		<script>
 			var video = document.getElementById('video');
 			var videoSrc = window.location.origin + '%s';
-			if (video.canPlayType('video/mp4')) { video.src = videoSrc; } 
+
 			if (Hls.isSupported()) {
 				var hls = new Hls();
 				hls.loadSource(videoSrc);
 				hls.attachMedia(video);
+			} else if (video.canPlayType('application/vnd.apple.mpegurl') || video.canPlayType('video/mp4')) {
+				video.src = videoSrc;
 			}
+			video.play().catch(e => console.log("Autoplay blocked, waiting for interaction"));
 		</script>
 	</body>
 	</html>`, streamURL)
@@ -75,20 +79,23 @@ func getStreamRoute(ctx *gin.Context) {
 	messageID, _ := strconv.Atoi(messageIDParm)
 	authHash := ctx.Query("hash")
 
-	// Fixed: Checking authHash so it's "used"
 	if authHash == "" {
-		http.Error(w, "missing hash param", http.StatusBadRequest)
+		ctx.AbortWithStatus(http.StatusBadRequest)
 		return
 	}
 
 	worker := bot.GetNextWorker()
 	file, err := utils.FileFromMessage(ctx, worker.Client, messageID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		ctx.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 
+	// Range & Security Headers
 	ctx.Header("Accept-Ranges", "bytes")
+	ctx.Header("Access-Control-Allow-Origin", "*")
+	ctx.Header("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+	
 	var start, end int64
 	rangeHeader := r.Header.Get("Range")
 
@@ -105,16 +112,18 @@ func getStreamRoute(ctx *gin.Context) {
 	}
 
 	contentLength := end - start + 1
-	
+	ctx.Header("Content-Length", strconv.FormatInt(contentLength, 10))
+
+	// DISPOSITION LOGIC - Yahan hai asli magic
 	if ctx.Query("d") == "true" {
-		ctx.Header("Content-Type", file.MimeType)
+		ctx.Header("Content-Type", "application/octet-stream")
 		ctx.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", file.FileName))
 	} else {
-		ctx.Header("Content-Type", "video/mp4")
+		// Browser ko force karenge streaming mode mein
+		ctx.Header("Content-Type", "video/mp4") 
 		ctx.Header("Content-Disposition", "inline")
+		ctx.Header("X-Content-Type-Options", "nosniff") // Browser ki "automatic download" aadat rokne ke liye
 	}
-
-	ctx.Header("Content-Length", strconv.FormatInt(contentLength, 10))
 
 	if r.Method != "HEAD" {
 		pipe, err := stream.NewStreamPipe(ctx, worker.Client, file.Location, start, end, log)
