@@ -37,27 +37,43 @@ func getWatchRoute(ctx *gin.Context) {
 	<head>
 		<meta charset="UTF-8">
 		<meta name="viewport" content="width=device-width, initial-scale=1.0">
-		<title>Telegram Video Player</title>
-		<script src="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.polyfilled.js"></script>
-		<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/plyr@3.7.8/dist/plyr.css" />
+		<title>Ultimate Video Player</title>
+		<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 		<style>
-			body { margin: 0; background: #000; height: 100vh; display: flex; align-items: center; justify-content: center; }
-			.wrapper { width: 100%%; max-width: 950px; }
-			video { width: 100%%; border-radius: 10px; }
+			body { margin: 0; background: #000; height: 100vh; display: flex; align-items: center; justify-content: center; font-family: sans-serif; }
+			.container { width: 100%%; max-width: 900px; padding: 10px; }
+			video { width: 100%%; border-radius: 12px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); background: #111; }
+			.msg { color: #555; text-align: center; margin-top: 10px; font-size: 12px; }
 		</style>
 	</head>
 	<body>
-		<div class="wrapper">
-			<video id="player" playsinline controls preload="metadata">
-				<source src="%s" type="video/mp4" />
-			</video>
+		<div class="container">
+			<video id="video" controls playsinline autoplay></video>
+			<div class="msg">Try shifting to a faster network if buffering occurs.</div>
 		</div>
 		<script>
-			const player = new Plyr('#player', {
-				autoplay: true,
-				invertTime: false,
-				toggleInvert: false,
-			});
+			var video = document.getElementById('video');
+			var videoSrc = window.location.origin + '%s';
+
+			if (Hls.isSupported()) {
+				var hls = new Hls({
+					enableWorker: true,
+					maxBufferLength: 30,
+				});
+				hls.loadSource(videoSrc);
+				hls.attachMedia(video);
+				hls.on(Hls.Events.MANIFEST_PARSED, function() {
+					video.play();
+				});
+			} else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+				video.src = videoSrc;
+				video.addEventListener('loadedmetadata', function() {
+					video.play();
+				});
+			} else {
+				// Fallback for MP4
+				video.src = videoSrc;
+			}
 		</script>
 	</body>
 	</html>`, streamURL)
@@ -88,10 +104,10 @@ func getStreamRoute(ctx *gin.Context) {
 
 	isDownload := ctx.Query("d") == "true"
 	
-	// FIX FOR MPEG-TS: Agar file TS format mein hai toh sahi mime bhejenge
+	// MPEG-TS Special Handling
 	mimeType := "video/mp4"
-	if strings.HasSuffix(strings.ToLower(file.FileName), ".ts") || file.MimeType == "video/mp2t" {
-		mimeType = "video/mp2t"
+	if strings.Contains(strings.ToLower(file.FileName), ".ts") || file.MimeType == "video/mp2t" {
+		mimeType = "application/x-mpegURL" // Force browser to treat as stream
 	}
 
 	ctx.Header("Accept-Ranges", "bytes")
